@@ -232,6 +232,16 @@ def send_email_smtp(to_addr: str, cc_addrs: list[str], subject: str, html: str) 
     finally:
         server.quit()
 
+def _fmt_duration(minutos: int) -> str:
+    # 90 -> "1h30"
+    h = int(minutos) // 60
+    m = int(minutos) % 60
+    if h <= 0:
+        return f"{m} min"
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h{m:02d}"
+
 def format_email(
     nome_cliente: str,
     projeto: str,
@@ -245,43 +255,43 @@ def format_email(
     contrato_info: str = "",
     tipo_cobranca: str = ""
 ) -> str:
-
-    dt_ini = data_inicio.astimezone().strftime("%d/%m/%Y %H:%M")
-    dt_fim = data_fim.astimezone().strftime("%d/%m/%Y %H:%M")
+    # Mostramos só a data para evitar confusão com arredondamentos
+    data_str = data_inicio.astimezone().strftime("%d/%m/%Y")
 
     kms_html = ""
     if tipo == "Local":
-        kms_html = f"<tr><td><b>Kms:</b></td><td>{kms:.1f} km</td></tr>"
+        kms_html = f"Kms: {kms:.1f} km<br>"
 
-    desc_html = (descricao or "").replace("\r\n", "\n").replace("\n", "<br/>")
+    desc_html = (descricao or "").replace("\r\n", "\n").replace("\n", "<br>")
     cobranca_html = ""
     if tipo_cobranca:
-        cobranca_html = f"<p><b>Tipo de cobrança:</b> {tipo_cobranca}</p>"
+        cobranca_html = f"<br>Tipo de cobrança: {tipo_cobranca}<br>"
 
     contrato_html = ""
     if contrato_info:
-        contrato_html = f"<p><b>Contrato:</b> {contrato_info}</p>"
+        contrato_html = f"<br>Contrato: {contrato_info}<br>"
+
+    duracao_str = _fmt_duration(minutos_arred)
 
     return f"""
-    <p>Olá <b>{nome_cliente}</b>,</p>
-    <p>Segue o resumo da assistência:</p>
+<br>
+Olá {nome_cliente},<br><br>
 
-    <table cellpadding="4" cellspacing="0">
-      <tr><td><b>Projeto:</b></td><td>{projeto}</td></tr>
-      <tr><td><b>Técnico:</b></td><td>{tecnico}</td></tr>
-      <tr><td><b>Tipo:</b></td><td>{tipo}</td></tr>
-      <tr><td><b>Início:</b></td><td>{dt_ini}</td></tr>
-      <tr><td><b>Fim:</b></td><td>{dt_fim}</td></tr>
-      <tr><td><b>Tempo total:</b></td><td>{minutos_arred} min</td></tr>
-      {kms_html}
-    </table>
+Segue o resumo da assistência:<br><br>
 
-    {cobranca_html}
-    {contrato_html}
+{kms_html}
+Projeto: {projeto}<br>
+Técnico: {tecnico}<br>
+Tipo: {tipo}<br>
+Data: {data_str}<br>
+Tempo faturável (arredondado): {duracao_str} ({minutos_arred} min)<br>
+{cobranca_html}
+{contrato_html}
+<br>
+Descrição:<br><br>
+{desc_html}
+"""
 
-    <p><b>Descrição:</b></p>
-    <p>{desc_html}</p>
-    """
 
 
 # ----------------------------
@@ -1186,8 +1196,15 @@ def main():
                 tags = tag_names(a)
                 is_local = tag_local in tags
                 is_remota = tag_remota in tags
+                is_contrato = tag_contrato in tags
                 is_garantia = tag_garantia in tags
                 is_faturar = tag_faturar in tags
+
+                billing_flags = [is_contrato, is_faturar, is_garantia]
+                if sum(1 for x in billing_flags if x) != 1:
+                    print(f"[WARN] Assistência {assist_id} sem (ou com múltiplas) tags de cobrança. "
+                          f"Obrigatório: {tag_contrato} OU {tag_faturar} OU {tag_garantia}. Ignorando.")
+                    continue
 
                 if not is_local and not is_remota:
                     continue
@@ -1242,46 +1259,52 @@ def main():
                 # ----------------------------
                 grupo_contrato = ""
                 desconta_contrato = False
-                tipo_cobranca = "Avulso"
+                tipo_cobranca = ""
                 contrato_info = ""
                 nome_contrato = ""
 
                 if is_garantia:
                     tipo_cobranca = "Garantia"
+
                 elif is_faturar:
                     tipo_cobranca = "Faturar"
-                else:
-                    # Só tenta contrato se cliente marcado como Contrato
-                    if cliente_sp.get("Contrato") is True:
-                        grupo, di, df, group_items = find_contract_group_for_entry(
-                            contratos_items=contratos_items,
-                            clockify_client_id=clockify_client_id,
-                            clockify_project_id=clockify_project_id,
-                            assist_start=assist_start
-                        )
 
-                        if grupo and di and df and group_items:
-                            grupo_contrato = grupo
-                            nome_contrato = (group_items[0].get("fields", {}).get("Title") or "").strip()
-                            tipo_cobranca = "Contrato"
-                            desconta_contrato = True
+                elif is_contrato:
+                    tipo_cobranca = "Contrato"
+                    # Contrato passa a ser explícito e obrigatório
+                    if cliente_sp.get("Contrato") is not True:
+                        print(f"[WARN] Assistência {assist_id} marcada como Contrato mas cliente não está como Contrato no SP. Ignorando.")
+                        continue
 
-                            total_min = sum_contract_total_minutes(group_items)
+                    grupo, di, df, group_items = find_contract_group_for_entry(
+                        contratos_items=contratos_items,
+                        clockify_client_id=clockify_client_id,
+                        clockify_project_id=clockify_project_id,
+                        assist_start=assist_start
+                    )
 
-                            # IMPORTANTE: aqui só conta assistências que descontam do contrato
-                            used_min = sum_used_minutes_for_group(
-                                assist_items=assist_items,
-                                clockify_client_id=clockify_client_id,
-                                group_key=grupo,
-                                di=di,
-                                df=df
-                            )
-                            rem_min = max(0, total_min - used_min)
+                    if not (grupo and di and df and group_items):
+                        print(f"[WARN] Assistência {assist_id} marcada como Contrato mas não encontrei contrato válido (grupo/data/projeto). Ignorando.")
+                        continue
 
-                            contrato_info = (
-                                f"{nome_contrato} "
-                                f"({total_min/60:.1f} h contratadas, {used_min/60:.1f} h usadas, {rem_min/60:.1f} h disponíveis)"
-                            )
+                    grupo_contrato = grupo
+                    nome_contrato = (group_items[0].get("fields", {}).get("Title") or "").strip()
+                    desconta_contrato = True
+
+                    total_min = sum_contract_total_minutes(group_items)
+                    used_min = sum_used_minutes_for_group(
+                        assist_items=assist_items,
+                        clockify_client_id=clockify_client_id,
+                        group_key=grupo,
+                        di=di,
+                        df=df
+                    )
+                    rem_min = max(0, total_min - used_min)
+                    contrato_info = (
+                        f"{nome_contrato} "
+                        f"({total_min/60:.1f} h contratadas, {used_min/60:.1f} h usadas, {rem_min/60:.1f} h disponíveis)"
+                    )
+
 
 
                 tipo_txt = "Local" if is_local else "Remota"
