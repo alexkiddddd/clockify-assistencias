@@ -1,0 +1,24 @@
+{
+  "m365": {
+    "sharepoint_hostname": "empispt.sharepoint.com",
+    "site_path": "/sites/Assistencias",
+    "list_clientes": "Clientes",
+    "list_contratos": "Contratos",
+    "list_assistencias": "Assistencias"
+  },
+  "clockify": {
+    "tag_assistencia": "Assistencia",
+    "tag_deslocacao": "Deslocacao",
+    "tag_remota": "Remota",
+    "tag_local": "Local",
+	"tag_garantia": "Garantia",
+    "tag_faturar": "Faturar",
+    "billing_block_minutes_remota": 30,
+    "billing_block_minutes_local": 60,
+    "assoc_window_minutes": 240,
+    "lookback_hours": 48
+  },
+  "loop_seconds": 300,
+  "clients_sync_minutes": 15,
+  "clockify_api_base": "https://api.clockify.me/api/v1"
+}
