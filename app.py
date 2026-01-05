@@ -12,34 +12,43 @@ CFG_PATH = "/app/config.json"
 STATE_PATH = "/app/state.json"
 
 GRAPH = "https://graph.microsoft.com/v1.0"
-CLOCKIFY_DETAILED_REPORT_URL = "https://reports.api.clockify.me/v1/workspaces/{wid}/reports/detailed"
+CLOCKIFY_DETAILED_REPORT_URL = (
+    "https://reports.api.clockify.me/v1/workspaces/{wid}/reports/detailed"
+)
 
 
 # ----------------------------
 # Utils
 # ----------------------------
 
+
 def load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def save_json(path: str, data: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def iso_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
 def parse_dt(s: str | None) -> datetime | None:
     return dtparser.isoparse(s) if s else None
+
 
 def round_up_to_block(minutes: int, block: int) -> int:
     if minutes <= 0:
         return 0
     return ((minutes + block - 1) // block) * block
+
 
 def safe_float_km(text) -> float:
     if text is None:
@@ -52,8 +61,10 @@ def safe_float_km(text) -> float:
     except Exception:
         return 0.0
 
+
 def minutes_diff(a: datetime, b: datetime) -> float:
     return abs((a - b).total_seconds()) / 60.0
+
 
 def split_emails(value: str) -> list[str]:
     if not value:
@@ -61,8 +72,16 @@ def split_emails(value: str) -> list[str]:
     parts = [p.strip() for p in value.replace(",", ";").split(";")]
     return [p for p in parts if p]
 
+
 def env_flag(name: str, default: str = "0") -> bool:
-    return (os.environ.get(name, default) or default).strip().lower() in ("1", "true", "yes", "y", "on")
+    return (os.environ.get(name, default) or default).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    )
+
 
 def is_truthy(v) -> bool:
     if v is True:
@@ -71,6 +90,7 @@ def is_truthy(v) -> bool:
         return False
     s = str(v).strip().lower()
     return s in ("1", "true", "yes", "sim", "y", "on")
+
 
 def normalize_item_id(item_id) -> str:
     s = str(item_id).strip()
@@ -83,13 +103,16 @@ def normalize_item_id(item_id) -> str:
 # State helpers
 # ----------------------------
 
+
 def state_get_processed(state: dict) -> dict:
     return state.get("processed_assist_ids", {}) or {}
+
 
 def state_mark_processed(state: dict, assist_id: str) -> None:
     processed = state_get_processed(state)
     processed[str(assist_id)] = iso_z(utc_now())
     state["processed_assist_ids"] = processed
+
 
 def state_prune_processed(state: dict, keep_days: int = 7) -> None:
     processed = state_get_processed(state)
@@ -103,7 +126,10 @@ def state_prune_processed(state: dict, keep_days: int = 7) -> None:
             newp[k] = v
     state["processed_assist_ids"] = newp
 
-def state_is_processed_recent(state: dict, assist_id: str, within_days: int = 7) -> bool:
+
+def state_is_processed_recent(
+    state: dict, assist_id: str, within_days: int = 7
+) -> bool:
     processed = state_get_processed(state)
     ts = processed.get(str(assist_id))
     if not ts:
@@ -113,15 +139,20 @@ def state_is_processed_recent(state: dict, assist_id: str, within_days: int = 7)
         return False
     return dt >= (utc_now() - timedelta(days=within_days))
 
+
 def state_get_sent_emails(state: dict) -> dict:
     return state.get("sent_email_items", {}) or {}
+
 
 def state_mark_email_sent(state: dict, item_id: str) -> None:
     sent = state_get_sent_emails(state)
     sent[str(item_id)] = iso_z(utc_now())
     state["sent_email_items"] = sent
 
-def state_is_email_sent_recent(state: dict, item_id: str, within_days: int = 30) -> bool:
+
+def state_is_email_sent_recent(
+    state: dict, item_id: str, within_days: int = 30
+) -> bool:
     sent = state_get_sent_emails(state)
     ts = sent.get(str(item_id))
     if not ts:
@@ -130,6 +161,7 @@ def state_is_email_sent_recent(state: dict, item_id: str, within_days: int = 30)
     if not dt:
         return False
     return dt >= (utc_now() - timedelta(days=within_days))
+
 
 def state_prune_sent_emails(state: dict, keep_days: int = 90) -> None:
     sent = state_get_sent_emails(state)
@@ -147,6 +179,7 @@ def state_prune_sent_emails(state: dict, keep_days: int = 90) -> None:
 # ----------------------------
 # Resilient HTTP helpers (retry/backoff)
 # ----------------------------
+
 
 def _request_with_retry(
     method: str,
@@ -172,13 +205,15 @@ def _request_with_retry(
             headers=headers,
             json=json_body,
             params=params,
-            timeout=timeout_s
+            timeout=timeout_s,
         )
 
         if r.status_code in retry_statuses:
             if attempt >= max_attempts:
                 try:
-                    print(f"[ERRO-HTTP] {r.status_code} {method} {url} -> {json.dumps(r.json(), ensure_ascii=False)}")
+                    print(
+                        f"[ERRO-HTTP] {r.status_code} {method} {url} -> {json.dumps(r.json(), ensure_ascii=False)}"
+                    )
                 except Exception:
                     print(f"[ERRO-HTTP] {r.status_code} {method} {url} -> {r.text}")
                 r.raise_for_status()
@@ -189,14 +224,18 @@ def _request_with_retry(
             else:
                 wait_s = backoff
 
-            print(f"[WARN] HTTP {r.status_code} {method} {url} (tentativa {attempt}/{max_attempts}). Aguardando {wait_s}s.")
+            print(
+                f"[WARN] HTTP {r.status_code} {method} {url} (tentativa {attempt}/{max_attempts}). Aguardando {wait_s}s."
+            )
             time.sleep(wait_s)
             backoff = min(backoff * 2, backoff_max_s)
             continue
 
         if r.status_code >= 400:
             try:
-                print(f"[ERRO-HTTP] {r.status_code} {method} {url} -> {json.dumps(r.json(), ensure_ascii=False)}")
+                print(
+                    f"[ERRO-HTTP] {r.status_code} {method} {url} -> {json.dumps(r.json(), ensure_ascii=False)}"
+                )
             except Exception:
                 print(f"[ERRO-HTTP] {r.status_code} {method} {url} -> {r.text}")
 
@@ -207,6 +246,7 @@ def _request_with_retry(
 # ----------------------------
 # Email (SMTP) with CC
 # ----------------------------
+
 
 def send_email_smtp(to_addr: str, cc_addrs: list[str], subject: str, html: str) -> None:
     host = os.environ["SMTP_HOST"]
@@ -232,6 +272,7 @@ def send_email_smtp(to_addr: str, cc_addrs: list[str], subject: str, html: str) 
     finally:
         server.quit()
 
+
 def _fmt_duration(minutos: int) -> str:
     # 90 -> "1h30"
     h = int(minutos) // 60
@@ -241,6 +282,7 @@ def _fmt_duration(minutos: int) -> str:
     if m == 0:
         return f"{h}h"
     return f"{h}h{m:02d}"
+
 
 def format_email(
     nome_cliente: str,
@@ -253,7 +295,7 @@ def format_email(
     kms: float,
     descricao: str,
     contrato_info: str = "",
-    tipo_cobranca: str = ""
+    tipo_cobranca: str = "",
 ) -> str:
     # Mostramos só a data para evitar confusão com arredondamentos
     data_str = data_inicio.astimezone().strftime("%d/%m/%Y")
@@ -293,12 +335,14 @@ Descrição:<br><br>
 """
 
 
-
 # ----------------------------
 # Clockify APIs
 # ----------------------------
 
-def clockify_fetch_entries(api_key: str, workspace_id: str, start_dt: datetime, end_dt: datetime) -> list[dict]:
+
+def clockify_fetch_entries(
+    api_key: str, workspace_id: str, start_dt: datetime, end_dt: datetime
+) -> list[dict]:
     url = CLOCKIFY_DETAILED_REPORT_URL.format(wid=workspace_id)
     headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
 
@@ -310,10 +354,11 @@ def clockify_fetch_entries(api_key: str, workspace_id: str, start_dt: datetime, 
         body = {
             "dateRangeStart": iso_z(start_dt),
             "dateRangeEnd": iso_z(end_dt),
-            "detailedFilter": {"page": page, "pageSize": page_size}
+            "detailedFilter": {"page": page, "pageSize": page_size},
         }
         r = _request_with_retry(
-            "POST", url,
+            "POST",
+            url,
             headers=headers,
             json_body=body,
             timeout_s=45,
@@ -330,17 +375,20 @@ def clockify_fetch_entries(api_key: str, workspace_id: str, start_dt: datetime, 
 
     return out
 
+
 def clockify_list_clients(api_key: str, workspace_id: str, api_base: str) -> list[dict]:
     url = f"{api_base}/workspaces/{workspace_id}/clients"
     headers = {"X-Api-Key": api_key}
     r = _request_with_retry(
-        "GET", url,
+        "GET",
+        url,
         headers=headers,
         timeout_s=45,
         max_attempts=6,
         retry_statuses=(429, 502, 503, 504),
     )
     return r.json() or []
+
 
 def get_entry_id(entry: dict) -> str:
     for k in ("id", "_id", "timeEntryId", "timeentryId", "uid"):
@@ -358,6 +406,7 @@ def get_entry_id(entry: dict) -> str:
         return f"synthetic|{user_id}|{start}|{end}|{proj_id}|{desc}"
     return ""
 
+
 def tag_names(entry: dict) -> list[str]:
     tags = entry.get("tags") or []
     if not tags:
@@ -374,6 +423,7 @@ def tag_names(entry: dict) -> list[str]:
             return out
     return []
 
+
 def get_client(entry: dict) -> tuple[str, str]:
     c = entry.get("client")
     if isinstance(c, dict):
@@ -386,6 +436,7 @@ def get_client(entry: dict) -> tuple[str, str]:
     cname = (entry.get("clientName") or "").strip()
     return cid, cname
 
+
 def get_project_name(entry: dict) -> str:
     p = entry.get("project")
     if isinstance(p, dict):
@@ -394,6 +445,7 @@ def get_project_name(entry: dict) -> str:
             return name
     return (entry.get("projectName") or "").strip()
 
+
 def get_user_name(entry: dict) -> str:
     u = entry.get("user")
     if isinstance(u, dict):
@@ -401,6 +453,7 @@ def get_user_name(entry: dict) -> str:
         if name:
             return name
     return (entry.get("userName") or "").strip()
+
 
 def get_time_interval(entry: dict) -> tuple[datetime | None, datetime | None, int]:
     ti = entry.get("timeInterval") or {}
@@ -415,6 +468,7 @@ def get_time_interval(entry: dict) -> tuple[datetime | None, datetime | None, in
 # Microsoft Graph / SharePoint Lists
 # ----------------------------
 
+
 def graph_token() -> str:
     tenant_id = os.environ["M365_TENANT_ID"]
     client_id = os.environ["M365_CLIENT_ID"]
@@ -423,18 +477,22 @@ def graph_token() -> str:
     app = msal.ConfidentialClientApplication(
         client_id=client_id,
         client_credential=client_secret,
-        authority=f"https://login.microsoftonline.com/{tenant_id}"
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
     )
-    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    result = app.acquire_token_for_client(
+        scopes=["https://graph.microsoft.com/.default"]
+    )
     if "access_token" not in result:
         raise RuntimeError(f"Falha a obter token Graph: {result}")
     return result["access_token"]
+
 
 def gh(token: str, prefer: str | None = None) -> dict:
     h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if prefer:
         h["Prefer"] = prefer
     return h
+
 
 def graph_request(
     method: str,
@@ -443,7 +501,7 @@ def graph_request(
     *,
     json_body: dict | None = None,
     params: dict | None = None,
-    prefer: str | None = None
+    prefer: str | None = None,
 ):
     return _request_with_retry(
         method,
@@ -456,11 +514,13 @@ def graph_request(
         retry_statuses=(429, 502, 503, 504),
     )
 
+
 def get_site_id(sp_hostname: str, site_path: str, token: str) -> str:
     site_path = site_path.lstrip("/")
     url = f"{GRAPH}/sites/{sp_hostname}:/{site_path}"
     r = graph_request("GET", url, token)
     return r.json()["id"]
+
 
 def get_list_id(site_id: str, list_name: str, token: str) -> str:
     url = f"{GRAPH}/sites/{site_id}/lists?$select=id,displayName"
@@ -470,7 +530,10 @@ def get_list_id(site_id: str, list_name: str, token: str) -> str:
             return lst["id"]
     raise RuntimeError(f"Lista não encontrada: {list_name}")
 
-def list_items(site_id: str, list_id: str, token: str, select_fields: str) -> list[dict]:
+
+def list_items(
+    site_id: str, list_id: str, token: str, select_fields: str
+) -> list[dict]:
     url = f"{GRAPH}/sites/{site_id}/lists/{list_id}/items?expand=fields($select={select_fields})"
     items: list[dict] = []
     while url:
@@ -479,12 +542,16 @@ def list_items(site_id: str, list_id: str, token: str, select_fields: str) -> li
         items.extend(data.get("value", []))
         url = data.get("@odata.nextLink")
     return items
-    
+
+
 def refresh_assist_items(site_id: str, list_assist_id: str, token: str) -> list[dict]:
     return list_items(
-        site_id, list_assist_id, token,
-        "Title,ClockifyClientId,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados"
+        site_id,
+        list_assist_id,
+        token,
+        "Title,ClockifyClientId,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados",
     )
+
 
 def create_item(site_id: str, list_id: str, token: str, fields: dict) -> dict:
     url = f"{GRAPH}/sites/{site_id}/lists/{list_id}/items"
@@ -492,19 +559,21 @@ def create_item(site_id: str, list_id: str, token: str, fields: dict) -> dict:
     r = graph_request("POST", url, token, json_body=payload)
     return r.json()
 
+
 # CORREÇÃO: só argumentos nomeados
-def update_item_fields(*, site_id: str, list_id: str, item_id: str, token: str, fields: dict) -> dict:
+def update_item_fields(
+    *, site_id: str, list_id: str, item_id: str, token: str, fields: dict
+) -> dict:
     url = f"{GRAPH}/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
     r = graph_request(
-        "PATCH",
-        url,
-        token,
-        json_body=fields,
-        prefer="return=representation"
+        "PATCH", url, token, json_body=fields, prefer="return=representation"
     )
     return r.json() or {}
 
-def list_assistencias_pendentes(site_id: str, list_id: str, token: str, max_items: int = 200) -> list[dict]:
+
+def list_assistencias_pendentes(
+    site_id: str, list_id: str, token: str, max_items: int = 200
+) -> list[dict]:
     """
     Lê itens recentes e filtra localmente (não usa $filter em campo não indexado).
     Só devolve itens que ainda NÃO foram enviados.
@@ -538,10 +607,10 @@ def list_assistencias_pendentes(site_id: str, list_id: str, token: str, max_item
     return pendentes
 
 
-
 # ----------------------------
 # Clientes sync
 # ----------------------------
+
 
 def sp_index_items_by_field(items: list[dict], field_name: str) -> dict[str, dict]:
     idx = {}
@@ -552,19 +621,22 @@ def sp_index_items_by_field(items: list[dict], field_name: str) -> dict[str, dic
             idx[key] = it
     return idx
 
+
 def sync_clientes_clockify_to_sharepoint(
     token: str,
     site_id: str,
     list_clientes_id: str,
     api_key: str,
     workspace_id: str,
-    api_base: str
+    api_base: str,
 ) -> None:
     clockify_clients = clockify_list_clients(api_key, workspace_id, api_base)
 
     sp_items = list_items(
-        site_id, list_clientes_id, token,
-        "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails"
+        site_id,
+        list_clientes_id,
+        token,
+        "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails",
     )
     sp_by_cid = sp_index_items_by_field(sp_items, "ClockifyClientId")
 
@@ -593,7 +665,7 @@ def sync_clientes_clockify_to_sharepoint(
                 "ClockifyEmail": clockify_email,
                 "ClockifyCcEmails": clockify_cc,
                 "Ativo": True,
-                "Contrato": False
+                "Contrato": False,
             }
             create_item(site_id, list_clientes_id, token, fields)
             created += 1
@@ -615,16 +687,19 @@ def sync_clientes_clockify_to_sharepoint(
                     list_id=list_clientes_id,
                     item_id=normalize_item_id(it["id"]),
                     token=token,
-                    fields=patch
+                    fields=patch,
                 )
                 updated += 1
 
-    print(f"[INFO] Sync clientes Clockify -> SharePoint: criados={created}, atualizados={updated}, total_clockify={len(clockify_clients)}.")
+    print(
+        f"[INFO] Sync clientes Clockify -> SharePoint: criados={created}, atualizados={updated}, total_clockify={len(clockify_clients)}."
+    )
 
 
 # ----------------------------
 # Matching logic
 # ----------------------------
+
 
 def find_cliente(clientes_items: list[dict], clockify_client_id: str) -> dict | None:
     for it in clientes_items:
@@ -636,6 +711,7 @@ def find_cliente(clientes_items: list[dict], clockify_client_id: str) -> dict | 
         return f
     return None
 
+
 def contract_group_key(f: dict) -> str:
     # GrupoContrato é o identificador do “pacote” (base + topups)
     g = (f.get("GrupoContrato") or "").strip()
@@ -644,11 +720,12 @@ def contract_group_key(f: dict) -> str:
     # fallback: se alguém ainda não preencheu GrupoContrato, usa Title (não ideal)
     return (f.get("Title") or "").strip()
 
+
 def find_contract_group_for_entry(
     contratos_items: list[dict],
     clockify_client_id: str,
     clockify_project_id: str,
-    assist_start: datetime
+    assist_start: datetime,
 ) -> tuple[str, datetime | None, datetime | None, list[dict]]:
     """
     Devolve (grupo, di, df, linhas_do_grupo)
@@ -675,13 +752,7 @@ def find_contract_group_for_entry(
             continue
 
         pid = (f.get("ClockifyProjectId") or "").strip()
-        candidates.append({
-            "fields": f,
-            "item": it,
-            "di": di,
-            "df": df,
-            "pid": pid
-        })
+        candidates.append({"fields": f, "item": it, "di": di, "df": df, "pid": pid})
 
     if not candidates:
         return "", None, None, []
@@ -715,8 +786,11 @@ def find_contract_group_for_entry(
     rows = groups[best_g]
     di = min(r["di"] for r in rows)
     df = max(r["df"] for r in rows)
-    print(f"[WARN] Vários contratos candidatos. Escolhido grupo={best_g} por DataInicio mais recente.")
+    print(
+        f"[WARN] Vários contratos candidatos. Escolhido grupo={best_g} por DataInicio mais recente."
+    )
     return best_g, di, df, [r["item"] for r in rows]
+
 
 def sum_contract_total_minutes(contract_group_items: list[dict]) -> int:
     total = 0
@@ -726,12 +800,13 @@ def sum_contract_total_minutes(contract_group_items: list[dict]) -> int:
         total += int(round(horas * 60))
     return total
 
+
 def sum_used_minutes_for_group(
     assist_items: list[dict],
     clockify_client_id: str,
     group_key: str,
     di: datetime,
-    df: datetime
+    df: datetime,
 ) -> int:
     total = 0
     for it in assist_items:
@@ -752,6 +827,7 @@ def sum_used_minutes_for_group(
         total += int(f.get("MinutosArredondados") or 0)
     return total
 
+
 def update_contract_group_audit(
     *,
     site_id: str,
@@ -759,7 +835,7 @@ def update_contract_group_audit(
     token: str,
     contract_group_items: list[dict],
     used_min: int,
-    total_min: int
+    total_min: int,
 ) -> None:
     rem_min = max(0, total_min - used_min)
     horas_disp = round(rem_min / 60.0, 2)
@@ -777,10 +853,13 @@ def update_contract_group_audit(
             list_id=list_contratos_id,
             item_id=item_id,
             token=token,
-            fields=patch
+            fields=patch,
         )
 
-def find_contrato_ativo_record(contratos_items: list[dict], clockify_client_id: str, assist_start: datetime) -> dict | None:
+
+def find_contrato_ativo_record(
+    contratos_items: list[dict], clockify_client_id: str, assist_start: datetime
+) -> dict | None:
     candidatos: list[dict] = []
     for it in contratos_items:
         f = it.get("fields", {}) or {}
@@ -803,7 +882,10 @@ def find_contrato_ativo_record(contratos_items: list[dict], clockify_client_id: 
     candidatos.sort(key=lambda x: (x.get("DataInicio") or ""))
     return candidatos[-1]
 
-def sum_used_minutes_for_contract(assist_items: list[dict], clockify_client_id: str, di: datetime, df: datetime) -> int:
+
+def sum_used_minutes_for_contract(
+    assist_items: list[dict], clockify_client_id: str, di: datetime, df: datetime
+) -> int:
     total = 0
     for it in assist_items:
         f = it.get("fields", {}) or {}
@@ -826,6 +908,7 @@ def sum_used_minutes_for_contract(assist_items: list[dict], clockify_client_id: 
 
     return total
 
+
 def update_contrato_auditoria(
     site_id: str,
     list_contratos_id: str,
@@ -833,7 +916,7 @@ def update_contrato_auditoria(
     contratos_items: list[dict],
     assist_items: list[dict],
     clockify_client_id: str,
-    assist_start: datetime
+    assist_start: datetime,
 ) -> None:
     # Encontrar contrato ativo (precisamos do item completo para ter o it["id"])
     contrato_item = None
@@ -878,27 +961,33 @@ def update_contrato_auditoria(
     patch["DataHoraAuditoria"] = iso_z(utc_now())
 
     update_item_fields(
-    site_id=site_id,
-    list_id=list_contratos_id,
-    item_id=normalize_item_id(contrato_item_id),
-    token=token,
-    fields=patch
+        site_id=site_id,
+        list_id=list_contratos_id,
+        item_id=normalize_item_id(contrato_item_id),
+        token=token,
+        fields=patch,
+    )
+
+    print(
+        "[INFO] Auditoria contrato atualizada:",
+        {
+            "ClockifyClientId": clockify_client_id,
+            "Contrato": (f.get("Title") or "").strip(),
+            "MinutosUsados": used_min,
+            "MinutosDisponiveis": rem_min,
+        },
     )
 
 
-    print("[INFO] Auditoria contrato atualizada:", {
-        "ClockifyClientId": clockify_client_id,
-        "Contrato": (f.get("Title") or "").strip(),
-        "MinutosUsados": used_min,
-        "MinutosDisponiveis": rem_min
-    })
-
-def already_exists_assistencia(assist_items: list[dict], clockify_assist_id: str) -> dict | None:
+def already_exists_assistencia(
+    assist_items: list[dict], clockify_assist_id: str
+) -> dict | None:
     for it in assist_items:
         f = it.get("fields", {}) or {}
         if (f.get("Title") or "").strip() == str(clockify_assist_id).strip():
             return it
     return None
+
 
 def pick_nearest_deslocacao(
     deslocacoes: list[dict],
@@ -906,7 +995,7 @@ def pick_nearest_deslocacao(
     tecnico: str,
     assist_start: datetime,
     used_ids: set[str],
-    window_minutes: int
+    window_minutes: int,
 ) -> dict | None:
     best = None
     best_diff = None
@@ -941,6 +1030,7 @@ def pick_nearest_deslocacao(
 # Main loop
 # ----------------------------
 
+
 def main():
     cfg = load_json(CFG_PATH)
     state = load_json(STATE_PATH) if os.path.exists(STATE_PATH) else {}
@@ -965,7 +1055,6 @@ def main():
     tag_garantia = cfg["clockify"]["tag_garantia"]
     tag_faturar = cfg["clockify"]["tag_faturar"]
 
-
     block_remota = int(cfg["clockify"]["billing_block_minutes_remota"])
     block_local = int(cfg["clockify"]["billing_block_minutes_local"])
     window = int(cfg["clockify"].get("assoc_window_minutes", 240))
@@ -989,8 +1078,14 @@ def main():
             list_contratos_id = get_list_id(site_id, list_contratos_name, token)
             list_assist_id = get_list_id(site_id, list_assist_name, token)
 
-            last_sync = parse_dt(state.get("last_clients_sync_utc")) if state.get("last_clients_sync_utc") else None
-            need_sync = (last_sync is None) or ((utc_now() - last_sync).total_seconds() >= clients_sync_minutes * 60)
+            last_sync = (
+                parse_dt(state.get("last_clients_sync_utc"))
+                if state.get("last_clients_sync_utc")
+                else None
+            )
+            need_sync = (last_sync is None) or (
+                (utc_now() - last_sync).total_seconds() >= clients_sync_minutes * 60
+            )
 
             if need_sync:
                 sync_clientes_clockify_to_sharepoint(
@@ -999,25 +1094,31 @@ def main():
                     list_clientes_id=list_clientes_id,
                     api_key=clockify_api_key,
                     workspace_id=clockify_workspace_id,
-                    api_base=clockify_api_base
+                    api_base=clockify_api_base,
                 )
                 state["last_clients_sync_utc"] = iso_z(utc_now())
                 save_json(STATE_PATH, state)
 
             clientes_items = list_items(
-                site_id, list_clientes_id, token,
-                "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails"
+                site_id,
+                list_clientes_id,
+                token,
+                "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails",
             )
             contratos_items = list_items(
-                site_id, list_contratos_id, token,
-                "Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,DataInicio,DataFim,HorasContratadas,Ativo,MinutosUsados,MinutosDisponiveis,HorasDisponiveis"
+                site_id,
+                list_contratos_id,
+                token,
+                "Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,DataInicio,DataFim,HorasContratadas,Ativo,MinutosUsados,MinutosDisponiveis,HorasDisponiveis",
             )
 
             assist_items = list_items(
-                site_id, list_assist_id, token,
-                "Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,DescontaContrato,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados"
+                site_id,
+                list_assist_id,
+                token,
+                "Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,DescontaContrato,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados",
             )
-            
+
             # Enviar emails pendentes e marcar colunas
             pendentes = list_assistencias_pendentes(site_id, list_assist_id, token)
 
@@ -1045,10 +1146,14 @@ def main():
                 if not to_addr:
                     continue
 
-                cc_addrs = split_emails((cliente_sp.get("ClockifyCcEmails") or "").strip())
+                cc_addrs = split_emails(
+                    (cliente_sp.get("ClockifyCcEmails") or "").strip()
+                )
 
                 tipo_txt = (f.get("Tipo") or "").strip()
-                nome_cliente = (f.get("NomeCliente") or cliente_sp.get("Title") or "").strip()
+                nome_cliente = (
+                    f.get("NomeCliente") or cliente_sp.get("Title") or ""
+                ).strip()
                 projeto = (f.get("Projeto") or "").strip()
                 tecnico = (f.get("Tecnico") or "").strip()
                 descricao = (f.get("Descricao") or "").strip()
@@ -1064,14 +1169,18 @@ def main():
                 # Informacao de contrato no email (modelo atual, simples)
                 contrato_info = ""
                 if cliente_sp.get("Contrato") is True:
-                    c = find_contrato_ativo_record(contratos_items, clockify_client_id, assist_start)
+                    c = find_contrato_ativo_record(
+                        contratos_items, clockify_client_id, assist_start
+                    )
                     if c:
                         nome_contrato = (c.get("Title") or "").strip()
                         di = parse_dt(c.get("DataInicio"))
                         df = parse_dt(c.get("DataFim"))
                         horas = float(c.get("HorasContratadas") or 0)
                         if di and df and horas > 0:
-                            used_min = sum_used_minutes_for_contract(assist_items, clockify_client_id, di, df)
+                            used_min = sum_used_minutes_for_contract(
+                                assist_items, clockify_client_id, di, df
+                            )
                             total_min = int(horas * 60)
                             rem_min = max(0, total_min - used_min)
                             contrato_info = (
@@ -1083,12 +1192,18 @@ def main():
 
                 subject = f"Assistência {tipo_txt} {nome_cliente} {assist_start.astimezone().strftime('%d/%m/%Y')}"
                 html = format_email(
-                    nome_cliente, projeto, tecnico, tipo_txt,
-                    assist_start, assist_end, min_arred, kms, descricao,
+                    nome_cliente,
+                    projeto,
+                    tecnico,
+                    tipo_txt,
+                    assist_start,
+                    assist_end,
+                    min_arred,
+                    kms,
+                    descricao,
                     contrato_info=contrato_info,
-                    tipo_cobranca=tipo_cobranca
+                    tipo_cobranca=tipo_cobranca,
                 )
-
 
                 # 1) Envia email
                 send_email_smtp(to_addr, cc_addrs, subject, html)
@@ -1099,15 +1214,18 @@ def main():
                     list_id=list_assist_id,
                     item_id=item_id,
                     token=token,
-                    fields={"EmailEnviado": True, "DataHoraEmail": iso_z(utc_now())}
+                    fields={"EmailEnviado": True, "DataHoraEmail": iso_z(utc_now())},
                 )
 
-                print("[INFO] Email pendente enviado e marcado como enviado:", {
-                    "ClockifyId": assist_id,
-                    "item_id": item_id,
-                    "EmailEnviado": patched.get("EmailEnviado"),
-                    "DataHoraEmail": patched.get("DataHoraEmail"),
-                })
+                print(
+                    "[INFO] Email pendente enviado e marcado como enviado:",
+                    {
+                        "ClockifyId": assist_id,
+                        "item_id": item_id,
+                        "EmailEnviado": patched.get("EmailEnviado"),
+                        "DataHoraEmail": patched.get("DataHoraEmail"),
+                    },
+                )
 
                 # 3) Se ficou marcado, faz LOCK e auditoria
                 if patched.get("EmailEnviado") is True:
@@ -1127,7 +1245,7 @@ def main():
                             contratos_items=contratos_items,
                             clockify_client_id=clockify_client_id,
                             clockify_project_id=clockify_project_id,
-                            assist_start=assist_start
+                            assist_start=assist_start,
                         )
                         if grupo and di and df and group_items:
                             total_min = sum_contract_total_minutes(group_items)
@@ -1136,7 +1254,7 @@ def main():
                                 clockify_client_id=clockify_client_id,
                                 group_key=grupo,
                                 di=di,
-                                df=df
+                                df=df,
                             )
                             update_contract_group_audit(
                                 site_id=site_id,
@@ -1144,28 +1262,32 @@ def main():
                                 token=token,
                                 contract_group_items=group_items,
                                 used_min=used_min,
-                                total_min=total_min
+                                total_min=total_min,
                             )
-
 
             end_dt = utc_now()
             start_dt = end_dt - timedelta(hours=lookback_hours)
 
-            entries = clockify_fetch_entries(clockify_api_key, clockify_workspace_id, start_dt, end_dt)
+            entries = clockify_fetch_entries(
+                clockify_api_key, clockify_workspace_id, start_dt, end_dt
+            )
 
             if debug_clockify and entries:
                 s = entries[0]
                 print("[DEBUG] Clockify sample keys:", sorted(list(s.keys())))
-                print("[DEBUG] Clockify sample id candidates:", {
-                    "id": s.get("id"),
-                    "_id": s.get("_id"),
-                    "timeEntryId": s.get("timeEntryId"),
-                    "clientId": s.get("clientId"),
-                    "projectId": s.get("projectId"),
-                    "userId": s.get("userId"),
-                    "tags": s.get("tags"),
-                    "tagIds": s.get("tagIds"),
-                })
+                print(
+                    "[DEBUG] Clockify sample id candidates:",
+                    {
+                        "id": s.get("id"),
+                        "_id": s.get("_id"),
+                        "timeEntryId": s.get("timeEntryId"),
+                        "clientId": s.get("clientId"),
+                        "projectId": s.get("projectId"),
+                        "userId": s.get("userId"),
+                        "tags": s.get("tags"),
+                        "tagIds": s.get("tagIds"),
+                    },
+                )
 
             assistencias = []
             deslocacoes = []
@@ -1182,7 +1304,9 @@ def main():
                 assist_id = get_entry_id(a)
                 if not assist_id:
                     if debug_clockify:
-                        print(f"[WARN] Assistência sem ID (keys={sorted(list(a.keys()))}). Ignorando.")
+                        print(
+                            f"[WARN] Assistência sem ID (keys={sorted(list(a.keys()))}). Ignorando."
+                        )
                     continue
 
                 # cache local
@@ -1202,8 +1326,10 @@ def main():
 
                 billing_flags = [is_contrato, is_faturar, is_garantia]
                 if sum(1 for x in billing_flags if x) != 1:
-                    print(f"[WARN] Assistência {assist_id} sem (ou com múltiplas) tags de cobrança. "
-                          f"Obrigatório: {tag_contrato} OU {tag_faturar} OU {tag_garantia}. Ignorando.")
+                    print(
+                        f"[WARN] Assistência {assist_id} sem (ou com múltiplas) tags de cobrança. "
+                        f"Obrigatório: {tag_contrato} OU {tag_faturar} OU {tag_garantia}. Ignorando."
+                    )
                     continue
 
                 if not is_local and not is_remota:
@@ -1216,11 +1342,13 @@ def main():
                 clockify_client_id, client_name = get_client(a)
                 if not clockify_client_id:
                     if debug_clockify:
-                        print(f"[WARN] Assistência {assist_id} sem clientId. Ignorando.")
+                        print(
+                            f"[WARN] Assistência {assist_id} sem clientId. Ignorando."
+                        )
                     continue
-                    
+
                 clockify_project_id = (a.get("projectId") or "").strip()
-                
+
                 cliente_sp = find_cliente(clientes_items, clockify_client_id)
                 if not cliente_sp:
                     continue
@@ -1229,7 +1357,9 @@ def main():
                 if not to_addr:
                     continue
 
-                cc_addrs = split_emails((cliente_sp.get("ClockifyCcEmails") or "").strip())
+                cc_addrs = split_emails(
+                    (cliente_sp.get("ClockifyCcEmails") or "").strip()
+                )
 
                 tecnico = get_user_name(a) or ""
                 projeto = get_project_name(a) or ""
@@ -1248,7 +1378,7 @@ def main():
                         tecnico=tecnico,
                         assist_start=assist_start,
                         used_ids=used_desloc_ids,
-                        window_minutes=window
+                        window_minutes=window,
                     )
                     if best_desl:
                         kms = safe_float_km(best_desl.get("description"))
@@ -1273,22 +1403,28 @@ def main():
                     tipo_cobranca = "Contrato"
                     # Contrato passa a ser explícito e obrigatório
                     if cliente_sp.get("Contrato") is not True:
-                        print(f"[WARN] Assistência {assist_id} marcada como Contrato mas cliente não está como Contrato no SP. Ignorando.")
+                        print(
+                            f"[WARN] Assistência {assist_id} marcada como Contrato mas cliente não está como Contrato no SP. Ignorando."
+                        )
                         continue
 
                     grupo, di, df, group_items = find_contract_group_for_entry(
                         contratos_items=contratos_items,
                         clockify_client_id=clockify_client_id,
                         clockify_project_id=clockify_project_id,
-                        assist_start=assist_start
+                        assist_start=assist_start,
                     )
 
                     if not (grupo and di and df and group_items):
-                        print(f"[WARN] Assistência {assist_id} marcada como Contrato mas não encontrei contrato válido (grupo/data/projeto). Ignorando.")
+                        print(
+                            f"[WARN] Assistência {assist_id} marcada como Contrato mas não encontrei contrato válido (grupo/data/projeto). Ignorando."
+                        )
                         continue
 
                     grupo_contrato = grupo
-                    nome_contrato = (group_items[0].get("fields", {}).get("Title") or "").strip()
+                    nome_contrato = (
+                        group_items[0].get("fields", {}).get("Title") or ""
+                    ).strip()
                     desconta_contrato = True
 
                     total_min = sum_contract_total_minutes(group_items)
@@ -1297,15 +1433,13 @@ def main():
                         clockify_client_id=clockify_client_id,
                         group_key=grupo,
                         di=di,
-                        df=df
+                        df=df,
                     )
                     rem_min = max(0, total_min - used_min)
                     contrato_info = (
                         f"{nome_contrato} "
                         f"({total_min/60:.1f} h contratadas, {used_min/60:.1f} h usadas, {rem_min/60:.1f} h disponíveis)"
                     )
-
-
 
                 tipo_txt = "Local" if is_local else "Remota"
 
@@ -1334,17 +1468,24 @@ def main():
 
                 created = create_item(site_id, list_assist_id, token, fields)
                 item_id = normalize_item_id(created.get("id"))
-                print(f"[INFO] Criado item Assistencias (ClockifyId={assist_id}, item_id={item_id}).")
+                print(
+                    f"[INFO] Criado item Assistencias (ClockifyId={assist_id}, item_id={item_id})."
+                )
 
                 subject = f"Assistência {tipo_txt} {fields['NomeCliente']} {assist_start.astimezone().strftime('%d/%m/%Y')}"
                 html = format_email(
-                    fields["NomeCliente"], projeto, tecnico, tipo_txt,
-                    assist_start, assist_end, min_arred, kms, descricao,
+                    fields["NomeCliente"],
+                    projeto,
+                    tecnico,
+                    tipo_txt,
+                    assist_start,
+                    assist_end,
+                    min_arred,
+                    kms,
+                    descricao,
                     contrato_info=contrato_info,
-                    tipo_cobranca=tipo_cobranca
+                    tipo_cobranca=tipo_cobranca,
                 )
-
-
 
                 send_email_smtp(to_addr, cc_addrs, subject, html)
 
@@ -1353,14 +1494,17 @@ def main():
                     list_id=list_assist_id,
                     item_id=item_id,
                     token=token,
-                    fields={"EmailEnviado": True, "DataHoraEmail": iso_z(utc_now())}
+                    fields={"EmailEnviado": True, "DataHoraEmail": iso_z(utc_now())},
                 )
-                print("[INFO] Email enviado e item atualizado:", {
-                    "ClockifyId": assist_id,
-                    "item_id": item_id,
-                    "EmailEnviado": patched.get("EmailEnviado"),
-                    "DataHoraEmail": patched.get("DataHoraEmail"),
-                })
+                print(
+                    "[INFO] Email enviado e item atualizado:",
+                    {
+                        "ClockifyId": assist_id,
+                        "item_id": item_id,
+                        "EmailEnviado": patched.get("EmailEnviado"),
+                        "DataHoraEmail": patched.get("DataHoraEmail"),
+                    },
+                )
 
                 state_mark_processed(state, assist_id)
 
@@ -1371,6 +1515,7 @@ def main():
             print(f"[ERRO] {ex}")
 
         time.sleep(loop_seconds)
+
 
 if __name__ == "__main__":
     main()
