@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from dateutil import parser as dtparser
 import requests
 import msal
+import re
 
 CFG_PATH = "/app/config.json"
 STATE_PATH = "/app/state.json"
@@ -98,6 +99,31 @@ def normalize_item_id(item_id) -> str:
         raise RuntimeError(f"item_id inválido devolvido pelo Graph: {s}")
     return s
 
+def normalize_group_key(v: str) -> str:
+    """
+    Normaliza GrupoContrato para um formato consistente e legível.
+    Ex:
+      'Anglotex2026'    -> 'anglotex-2026'
+      'Anglotex 2026'   -> 'anglotex-2026'
+      'anglotex__2026'  -> 'anglotex-2026'
+      ' Anglotex - VIP' -> 'anglotex-vip'
+    """
+    s = (v or "").strip().lower()
+    if not s:
+        return ""
+
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+
+    m = re.match(r"^(.*?)(\d{4})$", s)
+    if m:
+        left = m.group(1).rstrip("-")
+        year = m.group(2)
+        if left:
+            return f"{left}-{year}"
+        return year
+
+    return s
 
 # ----------------------------
 # State helpers
@@ -175,6 +201,35 @@ def state_prune_sent_emails(state: dict, keep_days: int = 90) -> None:
             newd[k] = v
     state["sent_email_items"] = newd
 
+def state_get_alerts(state: dict) -> dict:
+    return state.get("sent_alerts", {}) or {}
+
+def state_mark_alert_sent(state: dict, alert_key: str) -> None:
+    d = state_get_alerts(state)
+    d[str(alert_key)] = iso_z(utc_now())
+    state["sent_alerts"] = d
+
+def state_is_alert_sent_recent(state: dict, alert_key: str, within_days: int = 365) -> bool:
+    d = state_get_alerts(state)
+    ts = d.get(str(alert_key))
+    if not ts:
+        return False
+    dt = parse_dt(ts)
+    if not dt:
+        return False
+    return dt >= (utc_now() - timedelta(days=within_days))
+
+def state_prune_alerts(state: dict, keep_days: int = 400) -> None:
+    d = state_get_alerts(state)
+    if not d:
+        return
+    cutoff = utc_now() - timedelta(days=keep_days)
+    newd = {}
+    for k, v in d.items():
+        dt = parse_dt(v)
+        if dt and dt >= cutoff:
+            newd[k] = v
+    state["sent_alerts"] = newd
 
 # ----------------------------
 # Resilient HTTP helpers (retry/backoff)
@@ -321,12 +376,12 @@ Olá {nome_cliente},<br><br>
 
 Segue o resumo da assistência:<br><br>
 
-{kms_html}
 Projeto: {projeto}<br>
 Técnico: {tecnico}<br>
 Tipo: {tipo}<br>
 Data: {data_str}<br>
-Tempo faturável (arredondado): {duracao_str} ({minutos_arred} min)<br>
+Duração: {duracao_str}<br>
+{kms_html}
 {cobranca_html}
 {contrato_html}
 <br>
@@ -549,7 +604,7 @@ def refresh_assist_items(site_id: str, list_assist_id: str, token: str) -> list[
         site_id,
         list_assist_id,
         token,
-        "Title,ClockifyClientId,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados",
+        "Title,ClockifyClientId,GrupoContrato,DescontaContrato,EmailEnviado,DataHoraInicio,DataHoraFim,MinutosArredondados",
     )
 
 
@@ -582,8 +637,10 @@ def list_assistencias_pendentes(
         f"{GRAPH}/sites/{site_id}/lists/{list_id}/items"
         f"?$top={max_items}"
         f"&$orderby=createdDateTime desc"
-        f"&expand=fields($select=Title,ClockifyClientId,NomeCliente,Projeto,Tecnico,Tipo,"
-        f"DataHoraInicio,DataHoraFim,MinutosArredondados,Kms,Descricao,NomeContrato,EmailEnviado,DataHoraEmail)"
+        f"&expand=fields($select="
+        f"Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,TipoCobranca,"
+        f"NomeCliente,Projeto,Tecnico,Tipo,DataHoraInicio,DataHoraFim,"
+        f"MinutosArredondados,Kms,Descricao,NomeContrato,EmailEnviado,DataHoraEmail)"
     )
 
     r = graph_request("GET", url, token)
@@ -636,7 +693,7 @@ def sync_clientes_clockify_to_sharepoint(
         site_id,
         list_clientes_id,
         token,
-        "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails",
+        "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails,Kms",
     )
     sp_by_cid = sp_index_items_by_field(sp_items, "ClockifyClientId")
 
@@ -700,6 +757,19 @@ def sync_clientes_clockify_to_sharepoint(
 # Matching logic
 # ----------------------------
 
+def contrato_clockify_client_id(
+    contrato_fields: dict, clientes_by_item_id: dict[str, dict]
+) -> str:
+    lookup_id = contrato_fields.get("NomeClienteLookupId")
+    if not lookup_id:
+        return ""
+
+    cliente = clientes_by_item_id.get(str(lookup_id))
+    if not cliente:
+        return ""
+
+    return (cliente.get("ClockifyClientId") or "").strip()
+
 
 def find_cliente(clientes_items: list[dict], clockify_client_id: str) -> dict | None:
     for it in clientes_items:
@@ -712,21 +782,79 @@ def find_cliente(clientes_items: list[dict], clockify_client_id: str) -> dict | 
     return None
 
 
-def contract_group_key(f: dict) -> str:
-    # GrupoContrato é o identificador do “pacote” (base + topups)
-    g = (f.get("GrupoContrato") or "").strip()
+def contract_group_key(f: dict, item_id: str | None = None) -> str:
+    g_raw = (f.get("GrupoContrato") or "").strip()
+    g = normalize_group_key(g_raw)
     if g:
         return g
-    # fallback: se alguém ainda não preencheu GrupoContrato, usa Title (não ideal)
-    return (f.get("Title") or "").strip()
 
+    # fallback: sem GrupoContrato, cada linha é o seu próprio "grupo"
+    if item_id:
+        return f"item:{str(item_id).strip()}"
+
+    return normalize_group_key((f.get("Title") or "").strip()) or "item:unknown"
+
+def normalize_contratos_grupocontrato(
+    *,
+    site_id: str,
+    list_contratos_id: str,
+    token: str,
+    contratos_items: list[dict],
+) -> int:
+    """
+    Normaliza o campo GrupoContrato na lista Contratos (PATCH) quando necessário.
+    Devolve quantos itens foram atualizados.
+    """
+    updated = 0
+
+    for it in contratos_items:
+        item_id = normalize_item_id(it.get("id"))
+        f = it.get("fields", {}) or {}
+
+        raw = (f.get("GrupoContrato") or "").strip()
+        if not raw:
+            continue  # por defeito vazio, como queres
+
+        norm = normalize_group_key(raw)
+        if not norm or norm == raw:
+            continue  # já está ok
+
+        update_item_fields(
+            site_id=site_id,
+            list_id=list_contratos_id,
+            item_id=item_id,
+            token=token,
+            fields={"GrupoContrato": norm},
+        )
+        updated += 1
+
+    if updated:
+        print(f"[INFO] Normalização GrupoContrato (Contratos): atualizados={updated}")
+
+    return updated
+
+def normalize_group_key(v: str) -> str:
+    """
+    Normaliza a chave do GrupoContrato para reduzir erros humanos.
+    Ex:
+      'Anglotex 2026' -> 'anglotex2026'
+      'anglotex-2026' -> 'anglotex2026'
+    """
+    s = (v or "").strip().lower()
+    if not s:
+        return ""
+    # remove espaços, hífens e underscores (podes ajustar se quiseres manter algum)
+    s = re.sub(r"[\s\-_]+", "", s)
+    return s
 
 def find_contract_group_for_entry(
     contratos_items: list[dict],
+    clientes_by_item_id: dict[str, dict],
     clockify_client_id: str,
     clockify_project_id: str,
     assist_start: datetime,
 ) -> tuple[str, datetime | None, datetime | None, list[dict]]:
+
     """
     Devolve (grupo, di, df, linhas_do_grupo)
     Regras:
@@ -738,8 +866,10 @@ def find_contract_group_for_entry(
     candidates: list[dict] = []
     for it in contratos_items:
         f = it.get("fields", {}) or {}
-        if (f.get("ClockifyClientId") or "").strip() != clockify_client_id.strip():
+        contrato_cid = contrato_clockify_client_id(f, clientes_by_item_id)
+        if contrato_cid != clockify_client_id.strip():
             continue
+
         if f.get("Ativo") is not True:
             continue
 
@@ -764,8 +894,9 @@ def find_contract_group_for_entry(
     # Agrupar por GrupoContrato
     groups: dict[str, list[dict]] = {}
     for c in pool:
-        g = contract_group_key(c["fields"])
+        g = contract_group_key(c["fields"], c["item"].get("id"))
         groups.setdefault(g, []).append(c)
+
 
     if len(groups) == 1:
         g = next(iter(groups.keys()))
@@ -813,8 +944,9 @@ def sum_used_minutes_for_group(
         f = it.get("fields", {}) or {}
         if (f.get("ClockifyClientId") or "").strip() != clockify_client_id.strip():
             continue
-        if (f.get("GrupoContrato") or "").strip() != group_key.strip():
+        if normalize_group_key(f.get("GrupoContrato")) != normalize_group_key(group_key):
             continue
+
         if f.get("DescontaContrato") is not True:
             continue
 
@@ -858,13 +990,21 @@ def update_contract_group_audit(
 
 
 def find_contrato_ativo_record(
-    contratos_items: list[dict], clockify_client_id: str, assist_start: datetime
+    contratos_items: list[dict],
+    clientes_by_item_id: dict[str, dict],
+    clockify_client_id: str,
+    assist_start: datetime,
 ) -> dict | None:
     candidatos: list[dict] = []
+    target = clockify_client_id.strip()
+
     for it in contratos_items:
         f = it.get("fields", {}) or {}
-        if (f.get("ClockifyClientId") or "").strip() != clockify_client_id.strip():
+
+        contrato_cid = contrato_clockify_client_id(f, clientes_by_item_id)
+        if contrato_cid != target:
             continue
+
         if f.get("Ativo") is not True:
             continue
 
@@ -914,16 +1054,21 @@ def update_contrato_auditoria(
     list_contratos_id: str,
     token: str,
     contratos_items: list[dict],
+    clientes_by_item_id: dict[str, dict],
     assist_items: list[dict],
     clockify_client_id: str,
     assist_start: datetime,
 ) -> None:
-    # Encontrar contrato ativo (precisamos do item completo para ter o it["id"])
     contrato_item = None
+    target = clockify_client_id.strip()
+
     for it in contratos_items:
         f = it.get("fields", {}) or {}
-        if (f.get("ClockifyClientId") or "").strip() != clockify_client_id.strip():
+
+        contrato_cid = contrato_clockify_client_id(f, clientes_by_item_id)
+        if contrato_cid != target:
             continue
+
         if f.get("Ativo") is not True:
             continue
 
@@ -937,6 +1082,7 @@ def update_contrato_auditoria(
 
     if not contrato_item:
         return
+
 
     f = contrato_item.get("fields", {}) or {}
     contrato_item_id = normalize_item_id(contrato_item.get("id"))
@@ -963,7 +1109,7 @@ def update_contrato_auditoria(
     update_item_fields(
         site_id=site_id,
         list_id=list_contratos_id,
-        item_id=normalize_item_id(contrato_item_id),
+        item_id=contrato_item_id,
         token=token,
         fields=patch,
     )
@@ -1054,6 +1200,7 @@ def main():
     tag_local = cfg["clockify"]["tag_local"]
     tag_garantia = cfg["clockify"]["tag_garantia"]
     tag_faturar = cfg["clockify"]["tag_faturar"]
+    tag_contrato = cfg["clockify"]["tag_contrato"]
 
     block_remota = int(cfg["clockify"]["billing_block_minutes_remota"])
     block_local = int(cfg["clockify"]["billing_block_minutes_local"])
@@ -1103,15 +1250,37 @@ def main():
                 site_id,
                 list_clientes_id,
                 token,
-                "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails",
+                "Title,ClockifyClientId,Ativo,Contrato,ClockifyEmail,ClockifyCcEmails,Kms",
             )
+
+            # Indexar clientes por item id (para resolver lookups dos contratos)
+            clientes_by_item_id = {
+                normalize_item_id(it["id"]): (it.get("fields", {}) or {})
+                for it in clientes_items
+            }
+
             contratos_items = list_items(
                 site_id,
                 list_contratos_id,
                 token,
-                "Title,ClockifyClientId,ClockifyProjectId,GrupoContrato,DataInicio,DataFim,HorasContratadas,Ativo,MinutosUsados,MinutosDisponiveis,HorasDisponiveis",
+                "Title,NomeClienteLookupId,ClockifyProjectId,GrupoContrato,DataInicio,DataFim,HorasContratadas,Ativo,MinutosUsados,MinutosDisponiveis,HorasDisponiveis",
+            )
+            # Normalizar visualmente o GrupoContrato na lista Contratos
+            changed = normalize_contratos_grupocontrato(
+                site_id=site_id,
+                list_contratos_id=list_contratos_id,
+                token=token,
+                contratos_items=contratos_items,
             )
 
+            if changed:
+                # reler para garantir que o resto do ciclo já usa os valores normalizados
+                contratos_items = list_items(
+                    site_id,
+                    list_contratos_id,
+                    token,
+                    "Title,NomeClienteLookupId,ClockifyProjectId,GrupoContrato,DataInicio,DataFim,HorasContratadas,Ativo,MinutosUsados,MinutosDisponiveis,HorasDisponiveis",
+                )
             assist_items = list_items(
                 site_id,
                 list_assist_id,
@@ -1166,29 +1335,34 @@ def main():
                 min_arred = int(f.get("MinutosArredondados") or 0)
                 kms = float(f.get("Kms") or 0.0)
 
-                # Informacao de contrato no email (modelo atual, simples)
+                # Informação de contrato no email (apenas quando TipoCobranca == "Contrato")
                 contrato_info = ""
-                if cliente_sp.get("Contrato") is True:
-                    c = find_contrato_ativo_record(
-                        contratos_items, clockify_client_id, assist_start
-                    )
-                    if c:
-                        nome_contrato = (c.get("Title") or "").strip()
-                        di = parse_dt(c.get("DataInicio"))
-                        df = parse_dt(c.get("DataFim"))
-                        horas = float(c.get("HorasContratadas") or 0)
-                        if di and df and horas > 0:
-                            used_min = sum_used_minutes_for_contract(
-                                assist_items, clockify_client_id, di, df
-                            )
-                            total_min = int(horas * 60)
-                            rem_min = max(0, total_min - used_min)
-                            contrato_info = (
-                                f"{nome_contrato} "
-                                f"({horas:.1f} h contratadas, {used_min/60:.1f} h usadas, {rem_min/60:.1f} h disponíveis)"
-                            )
-                        else:
-                            contrato_info = nome_contrato
+
+                if tipo_cobranca == "Contrato":
+                    # opcional: validar também que o cliente está marcado como contrato no SP
+                    if cliente_sp.get("Contrato") is True:
+                        c = find_contrato_ativo_record(
+                            contratos_items, clientes_by_item_id, clockify_client_id, assist_start
+                        )
+                        if c:
+                            nome_contrato = (c.get("Title") or "").strip()
+                            di = parse_dt(c.get("DataInicio"))
+                            df = parse_dt(c.get("DataFim"))
+                            horas = float(c.get("HorasContratadas") or 0)
+
+                            if di and df and horas > 0:
+                                used_min = sum_used_minutes_for_contract(
+                                    assist_items, clockify_client_id, di, df
+                                )
+                                total_min = int(horas * 60)
+                                rem_min = max(0, total_min - used_min)
+
+                                contrato_info = (
+                                    f"{nome_contrato} "
+                                    f"({horas:.1f} h contratadas, {used_min/60:.1f} h usadas, {rem_min/60:.1f} h disponíveis)"
+                                )
+                            else:
+                                contrato_info = nome_contrato
 
                 subject = f"Assistência {tipo_txt} {nome_cliente} {assist_start.astimezone().strftime('%d/%m/%Y')}"
                 html = format_email(
@@ -1243,6 +1417,7 @@ def main():
                         # Reencontrar o grupo para obter as linhas do contrato (base + topups) e datas
                         grupo, di, df, group_items = find_contract_group_for_entry(
                             contratos_items=contratos_items,
+                            clientes_by_item_id=clientes_by_item_id,
                             clockify_client_id=clockify_client_id,
                             clockify_project_id=clockify_project_id,
                             assist_start=assist_start,
@@ -1324,15 +1499,15 @@ def main():
                 is_garantia = tag_garantia in tags
                 is_faturar = tag_faturar in tags
 
+                if not is_local and not is_remota:
+                    continue
+
                 billing_flags = [is_contrato, is_faturar, is_garantia]
                 if sum(1 for x in billing_flags if x) != 1:
                     print(
                         f"[WARN] Assistência {assist_id} sem (ou com múltiplas) tags de cobrança. "
                         f"Obrigatório: {tag_contrato} OU {tag_faturar} OU {tag_garantia}. Ignorando."
                     )
-                    continue
-
-                if not is_local and not is_remota:
                     continue
 
                 assist_start, assist_end, min_real = get_time_interval(a)
@@ -1372,6 +1547,7 @@ def main():
                 min_desloc_real = 0
 
                 if is_local:
+                    # 1) tenta obter kms da deslocação do Clockify (override)
                     best_desl = pick_nearest_deslocacao(
                         deslocacoes=deslocacoes,
                         clockify_client_id=clockify_client_id,
@@ -1383,6 +1559,13 @@ def main():
                     if best_desl:
                         kms = safe_float_km(best_desl.get("description"))
                         _, _, min_desloc_real = get_time_interval(best_desl)
+
+                    # 2) se não veio kms do Clockify, usa kms base do cliente no SharePoint
+                    if kms <= 0:
+                        kms_base = cliente_sp.get("Kms")
+                        kms_base_val = safe_float_km(kms_base)
+                        if kms_base_val > 0:
+                            kms = kms_base_val
 
                 # ----------------------------
                 # Tipo de cobrança + contrato por grupo (base + topups)
@@ -1410,6 +1593,7 @@ def main():
 
                     grupo, di, df, group_items = find_contract_group_for_entry(
                         contratos_items=contratos_items,
+                        clientes_by_item_id=clientes_by_item_id,
                         clockify_client_id=clockify_client_id,
                         clockify_project_id=clockify_project_id,
                         assist_start=assist_start,
@@ -1463,7 +1647,6 @@ def main():
                     "TipoCobranca": tipo_cobranca,
                     "GrupoContrato": grupo_contrato,
                     "DescontaContrato": bool(desconta_contrato),
-                    "NomeContrato": nome_contrato,
                 }
 
                 created = create_item(site_id, list_assist_id, token, fields)
